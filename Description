@@ -243,8 +243,15 @@ class Fob_Signed_By<TagType, typename std::enable_if<!is_self_signed<TagType>::t
 };
 
 
+template<bool, class T)
+Fob{
+using Fob_Self_Signed Type;
+}
 
-
+template<class T)
+Fob<true,T>{
+using Fob_Signed_By Type;
+}
 
 
 
