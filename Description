@@ -103,3 +103,163 @@ class Fob_Self_Signed{
 }
 
 
+// ========== Fob_Signed_By  ==================================================================
+template <typename TagType>
+class Fob_Signed_By<TagType, typename std::enable_if<!is_self_signed<TagType>::type::value>::type> {
+ public:
+  using Signer = Fob_Sel_Signed<typename Signer<TagType>::Tag>;
+  using Tag = TagType;
+
+  struct ValidationToken {
+    ValidationToken() = default;
+
+    ValidationToken(const ValidationToken&) = default;
+
+    ValidationToken(ValidationToken&& other)
+        : signature_of_public_key(std::move(other.signature_of_public_key)),
+          self_signature(std::move(other.self_signature)) {}
+
+    friend void swap(ValidationToken& lhs, ValidationToken& rhs) {
+      using std::swap;
+      swap(lhs.signature_of_public_key, rhs.signature_of_public_key);
+      swap(lhs.self_signature, rhs.self_signature);
+    }
+
+    ValidationToken& operator=(ValidationToken other) {
+      swap(*this, other);
+      return *this;
+    }
+
+    friend bool operator==(const ValidationToken& lhs, const ValidationToken& rhs) {
+      return lhs.signature_of_public_key == rhs.signature_of_public_key &&
+             lhs.self_signature == rhs.self_signature;
+    }
+
+    friend bool operator!=(const ValidationToken& lhs, const ValidationToken& rhs) {
+      return !operator==(lhs, rhs);
+    }
+
+    template <typename Archive>
+    void serialize(Archive& archive) {
+      archive(signature_of_public_key, self_signature);
+    }
+
+    asymm::Signature signature_of_public_key;
+    asymm::Signature self_signature;
+  };
+
+  Fob_Signed_By() = delete;
+
+  // This constructor is only available to this specialisation (i.e. non-self-signed Fob_Signed_By)
+  explicit Fob_Signed_By(const Signer& signing_Fob_Signed_By,
+               typename std::enable_if<!std::is_same<Fob_Signed_By<Tag>, Signer>::value>::type* = 0)
+      : keys_(asymm::GenerateKeyPair()),
+        validation_token_(CreateValidationToken(signing_Fob_Signed_By.private_key())),
+        name_(CreateName()) {}
+
+  Fob_Signed_By(const Fob_Signed_By& other)
+      : keys_(other.keys_), validation_token_(other.validation_token_), name_(other.name_) {}
+
+  Fob_Signed_By(Fob_Signed_By&& other)
+      : keys_(std::move(other.keys_)),
+        validation_token_(std::move(other.validation_token_)),
+        name_(std::move(other.name_)) {}
+
+  friend void swap(Fob_Signed_By& lhs, Fob_Signed_By& rhs) {
+    using std::swap;
+    swap(lhs.keys_, rhs.keys_);
+    swap(lhs.validation_token_, rhs.validation_token_);
+    swap(lhs.name_, rhs.name_);
+  }
+
+  Fob_Signed_By& operator=(Fob_Signed_By other) {
+    swap(*this, other);
+    return *this;
+  }
+
+  Fob_Signed_By(const crypto::CipherText& encrypted_Fob_Signed_By, const crypto::AES256KeyAndIV& symm_key_and_iv)
+      : keys_(), validation_token_(), name_() {
+    try {
+      SerialisedData serialised_Fob_Signed_By(crypto::SymmDecrypt(encrypted_Fob_Signed_By, symm_key_and_iv).string());
+      Parse(serialised_Fob_Signed_By, keys_, validation_token_, name_);
+    } catch (const std::exception&) {
+      BOOST_THROW_EXCEPTION(MakeError(CommonErrors::parsing_error));
+    }
+    ValidateToken();
+  }
+
+  crypto::CipherText Encrypt(const crypto::AES256KeyAndIV& symm_key_and_iv) const {
+    crypto::PlainText serialised_Fob_Signed_By(Serialise(keys_, validation_token_, name_));
+    return crypto::SymmEncrypt(serialised_Fob_Signed_By, symm_key_and_iv);
+  }
+
+  Identity name() const { return name_; }
+  ValidationToken validation_token() const { return validation_token_; }
+  asymm::PrivateKey private_key() const { return keys_.private_key; }
+  asymm::PublicKey public_key() const { return keys_.public_key; }
+
+ private:
+  Identity CreateName() const {
+    return crypto::Hash<crypto::SHA512>(Serialise(keys_.public_key, validation_token_));
+  }
+
+  ValidationToken CreateValidationToken(const asymm::PrivateKey& signing_key) const {
+    ValidationToken token;
+    SerialisedData serialised_public_key(Serialise(keys_.public_key));
+    token.signature_of_public_key =
+        asymm::Sign(asymm::PlainText(serialised_public_key), signing_key);
+
+    SerialisedData self(token.signature_of_public_key.string());
+    self.insert(self.end(), serialised_public_key.begin(), serialised_public_key.end());
+    SerialisedData type_id(Serialise(Tag::type_id));
+    self.insert(self.end(), type_id.begin(), type_id.end());
+    token.self_signature = asymm::Sign(asymm::PlainText(self), keys_.private_key);
+    return token;
+  }
+
+  void ValidateToken() const {
+    // Check the validation token is valid
+    SerialisedData self(validation_token_.signature_of_public_key.string());
+    SerialisedData serialised_public_key(Serialise(keys_.public_key));
+    self.insert(self.end(), serialised_public_key.begin(), serialised_public_key.end());
+    SerialisedData type_id(Serialise(Tag::type_id));
+    self.insert(self.end(), type_id.begin(), type_id.end());
+    if (!asymm::CheckSignature(asymm::PlainText(self), validation_token_.self_signature,
+                               keys_.public_key)) {
+      BOOST_THROW_EXCEPTION(MakeError(CommonErrors::parsing_error));
+    }
+    // Check the private key hasn't been replaced
+    asymm::PlainText plain(GetRandomString());
+    if (asymm::Decrypt(asymm::Encrypt(plain, keys_.public_key), keys_.private_key) != plain)
+      BOOST_THROW_EXCEPTION(MakeError(CommonErrors::parsing_error));
+    // Check the name is the hash of the public key + validation token
+    if (CreateName() != name_)
+      BOOST_THROW_EXCEPTION(MakeError(CommonErrors::parsing_error));
+  }
+
+  asymm::Keys keys_;
+  ValidationToken validation_token_;
+  Identity name_;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
